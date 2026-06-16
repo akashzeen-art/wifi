@@ -15,6 +15,7 @@ class SplashActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        setContentView(com.wifiextender.R.layout.activity_splash)
         val tokenManager = TokenManager(this)
 
         lifecycleScope.launch {

@@ -21,13 +21,13 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         tokenManager = TokenManager(this)
-        RetrofitClient.init(tokenManager)
+        RetrofitClient.init(tokenManager, this)
 
         if (!tokenManager.isLoggedIn()) {
             goToLogin(); return
         }
 
-        // Request location permission at startup for hotspot feature
+        // Request permissions for WiFi/hotspot features
         val perms = mutableListOf(
             android.Manifest.permission.ACCESS_FINE_LOCATION,
             android.Manifest.permission.ACCESS_COARSE_LOCATION
@@ -43,23 +43,7 @@ class MainActivity : AppCompatActivity() {
             androidx.core.app.ActivityCompat.requestPermissions(this, missing.toTypedArray(), 1001)
         }
 
-        // Request location permission at startup for hotspot feature
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-            val perms = mutableListOf(
-                android.Manifest.permission.ACCESS_FINE_LOCATION,
-                android.Manifest.permission.ACCESS_COARSE_LOCATION
-            )
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                perms.add(android.Manifest.permission.NEARBY_WIFI_DEVICES)
-            }
-            val missing = perms.filter {
-                androidx.core.content.ContextCompat.checkSelfPermission(this, it) !=
-                    android.content.pm.PackageManager.PERMISSION_GRANTED
-            }
-            if (missing.isNotEmpty()) {
-                androidx.core.app.ActivityCompat.requestPermissions(this, missing.toTypedArray(), 1001)
-            }
-        }
+        com.wifiextender.utils.HotspotManager(applicationContext).ensureClientListeners()
 
         // Create fragment instances once
         val homeFragment         = HomeFragment()

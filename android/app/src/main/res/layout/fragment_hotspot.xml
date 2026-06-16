@@ -103,6 +103,18 @@
 
                 </LinearLayout>
 
+                <!-- Connected device names -->
+                <TextView
+                    android:id="@+id/tv_connected_names"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text=""
+                    android:textSize="11sp"
+                    android:textColor="@color/text_secondary"
+                    android:gravity="center"
+                    android:layout_marginBottom="12dp"
+                    android:visibility="gone" />
+
                 <!-- Status -->
                 <TextView
                     android:id="@+id/tv_hotspot_status"
@@ -126,6 +138,19 @@
                     android:fontFamily="monospace"
                     android:layout_marginTop="8dp"
                     android:layout_gravity="center_horizontal"/>
+
+                <!-- Device limit badge -->
+                <TextView
+                    android:id="@+id/tv_device_limit"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text=""
+                    android:textSize="13sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/brand_primary"
+                    android:layout_marginTop="6dp"
+                    android:layout_gravity="center_horizontal"
+                    android:visibility="gone" />
 
                 <!-- Toggle Button -->
                 <com.google.android.material.button.MaterialButton
@@ -180,7 +205,16 @@
                             android:layout_height="wrap_content" android:text="—"
                             android:textSize="16sp" android:textStyle="bold"
                             android:textColor="@color/text_primary" android:layout_marginTop="2dp" />
+                        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                            android:text="Tap SYNC to enter hotspot name from Settings"
+                            android:textSize="10sp" android:textColor="@color/text_secondary"
+                            android:layout_marginTop="2dp" />
                     </LinearLayout>
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btn_sync_ssid" android:layout_width="wrap_content"
+                        android:layout_height="36dp" android:text="SYNC" android:textSize="12sp"
+                        android:layout_marginEnd="4dp"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/btn_copy_ssid" android:layout_width="wrap_content"
                         android:layout_height="36dp" android:text="COPY" android:textSize="12sp"
@@ -203,7 +237,16 @@
                             android:textSize="16sp" android:textStyle="bold"
                             android:textColor="@color/text_primary" android:fontFamily="monospace"
                             android:layout_marginTop="2dp" />
+                        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                            android:text="Tap EDIT or long press to change password"
+                            android:textSize="10sp" android:textColor="@color/text_secondary"
+                            android:layout_marginTop="2dp" />
                     </LinearLayout>
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btn_edit_password" android:layout_width="wrap_content"
+                        android:layout_height="36dp" android:text="EDIT" android:textSize="12sp"
+                        android:layout_marginEnd="4dp"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/btn_copy_password" android:layout_width="wrap_content"
                         android:layout_height="36dp" android:text="COPY" android:textSize="12sp"
@@ -225,7 +268,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:padding="16dp"
-                android:text="💡 How it works:\n1. Tap Start Hotspot\n2. Turn ON hotspot in the screen that opens\n3. Come back — app will auto-detect and show credentials\n4. Share credentials with others to connect"
+                android:text="💡 How it works:\n1. Tap Start Hotspot → turn it ON in phone Settings\n2. Tap SYNC and enter the exact Network name from Settings\n3. Enter password when asked\n4. Share credentials with others to connect"
                 android:textSize="12sp"
                 android:textColor="#F57F17"
                 android:lineSpacingExtra="4dp" />

@@ -23,7 +23,7 @@ class RegisterActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         tokenManager = TokenManager(this)
-        RetrofitClient.init(tokenManager)
+        RetrofitClient.init(tokenManager, this)
 
         binding.btnRegister.setOnClickListener {
             val name     = binding.etName.text.toString().trim()

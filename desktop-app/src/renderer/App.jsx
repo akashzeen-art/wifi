@@ -38,6 +38,7 @@ export default function App() {
 
         const settings = await window.electron.settings.get()
         const autoLogin = settings?.autoLogin !== false
+        if (settings?.apiUrl) window.__apiUrl = settings.apiUrl
 
         if (autoLogin && savedToken && savedUser) {
           window.__token = savedToken

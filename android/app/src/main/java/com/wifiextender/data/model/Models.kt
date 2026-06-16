@@ -8,6 +8,8 @@ data class LoginRequest(val email: String, val password: String)
 
 data class RegisterRequest(val name: String, val email: String, val password: String)
 
+data class RefreshRequest(val refreshToken: String)
+
 data class AuthResponse(
     val accessToken: String,
     val refreshToken: String,
@@ -115,6 +117,7 @@ data class DeviceReport(
     val deviceName: String?,
     val ipAddress: String?,
     val deviceType: String = "UNKNOWN",
+    val vendor: String? = null,
     val bytesSent: Long = 0,
     val bytesReceived: Long = 0,
     val online: Boolean = true

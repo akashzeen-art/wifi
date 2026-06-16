@@ -20,7 +20,12 @@ class AuthViewModel : ViewModel() {
     private val _state = MutableLiveData<AuthState>()
     val state: LiveData<AuthState> = _state
 
-    fun login(email: String, password: String, onSave: (String, String, com.wifiextender.data.model.UserInfo) -> Unit) {
+    fun login(
+        email: String,
+        password: String,
+        serverUrl: String,
+        onSave: (String, String, com.wifiextender.data.model.UserInfo) -> Unit
+    ) {
         _state.value = AuthState.Loading
         viewModelScope.launch {
             try {
@@ -33,7 +38,11 @@ class AuthViewModel : ViewModel() {
                     _state.value = AuthState.Error("Invalid email or password")
                 }
             } catch (e: Exception) {
-                _state.value = AuthState.Error("Cannot connect to server. Check your network.")
+                _state.value = AuthState.Error(
+                    "Cannot reach server at $serverUrl\n" +
+                        "• USB: adb reverse tcp:8080 tcp:8080\n" +
+                        "• Same WiFi: use http://YOUR_MAC_IP:8080/api/"
+                )
             }
         }
     }

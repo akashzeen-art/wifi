@@ -89,6 +89,12 @@ class HomeFragment : Fragment() {
             }
         }
 
+        binding.btnStartHotspot.setOnClickListener {
+            requireActivity().findViewById<com.google.android.material.bottomnavigation.BottomNavigationView>(
+                com.wifiextender.R.id.bottom_nav
+            ).selectedItemId = com.wifiextender.R.id.nav_hotspot
+        }
+
         viewModel.loadHome()
     }
 

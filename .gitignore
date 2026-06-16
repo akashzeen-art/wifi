@@ -22,3 +22,9 @@ application-temp.properties
 # IDE
 .idea/
 *.iml
+
+# OS / logs / local notes
+.DS_Store
+nohup.out
+CHANGES.md
+*.exe

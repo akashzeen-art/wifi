@@ -4,8 +4,6 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.net.wifi.WifiConfiguration
-import android.net.wifi.WifiManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -13,8 +11,6 @@ import android.provider.Settings
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.widget.EditText
-import android.widget.LinearLayout
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
@@ -22,23 +18,32 @@ import androidx.fragment.app.activityViewModels
 import com.google.android.material.snackbar.Snackbar
 import com.wifiextender.R
 import com.wifiextender.databinding.FragmentHotspotBinding
+import com.wifiextender.utils.ConnectedClient
+import com.wifiextender.utils.HotspotApplyResult
+import com.wifiextender.utils.HotspotManager
 
 class HotspotFragment : Fragment() {
 
     private var _binding: FragmentHotspotBinding? = null
     private val binding get() = _binding!!
     private val viewModel: DashboardViewModel by activityViewModels()
+    private lateinit var hotspotManager: HotspotManager
 
     private val handler = Handler(Looper.getMainLooper())
     private var uptimeSeconds = 0
     private var uptimeRunnable: Runnable? = null
-    private var devicePollRunnable: Runnable? = null
+    private var syncRunnable: Runnable? = null
     private var autoCheckRunnable: Runnable? = null
     private var isHotspotActive = false
-
-    // Custom hotspot config
-    private var hotspotSsid = "Extendra-WiFi"
-    private var hotspotPassword = "extendra123"
+    private var maxDevices: Int = 0
+    private var unlimitedDevices = false
+    private var passwordDialogShown = false
+    private var lastSyncedCredentials: Pair<String, String>? = null
+    private var ssidRetryRunnable: Runnable? = null
+    private var passwordDialog: AlertDialog? = null
+    private var ssidConfirmPending = false
+    private var ssidConfirmDialog: AlertDialog? = null
+    private var isFragmentResumed = false
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentHotspotBinding.inflate(inflater, container, false)
@@ -46,11 +51,105 @@ class HotspotFragment : Fragment() {
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        setUiStopped()
+        hotspotManager = HotspotManager(requireContext())
+        hotspotManager.ensurePhoneSsidListener()
+
+        viewModel.subscription.observe(viewLifecycleOwner) { sub ->
+            maxDevices = sub?.plan?.maxDevices ?: sub?.maxDevices ?: 0
+            unlimitedDevices = sub?.plan?.unlimitedDevices == true || maxDevices < 0
+            if (isHotspotActive) updateDeviceLimitBadge()
+        }
+
+        viewModel.loadHome()
+
+        viewModel.upgradeRequired.observe(viewLifecycleOwner) { msg ->
+            if (msg != null && isHotspotActive) {
+                val text = try {
+                    org.json.JSONObject(msg).optString("message", msg)
+                } catch (_: Exception) { msg }
+                    .replace("UPGRADE_REQUIRED: ", "")
+                androidx.appcompat.app.AlertDialog.Builder(requireContext())
+                    .setTitle("⚠️ Device Limit Reached")
+                    .setMessage("$text\n\nUpgrade your plan to connect more devices.")
+                    .setPositiveButton("Upgrade Plan") { _, _ ->
+                        activity?.findViewById<com.google.android.material.bottomnavigation.BottomNavigationView>(
+                            com.wifiextender.R.id.bottom_nav
+                        )?.selectedItemId = com.wifiextender.R.id.nav_subscription
+                    }
+                    .setNegativeButton("OK", null)
+                    .show()
+                viewModel.clearUpgradeRequired()
+            }
+        }
+
+        viewModel.devices.observe(viewLifecycleOwner) { devices ->
+            if (_binding == null || !isHotspotActive) return@observe
+            val online = devices.filter { it.online && !it.blocked }
+            updateConnectedDisplay(online.map {
+                ConnectedClient(
+                    name = com.wifiextender.utils.DeviceNameResolver.formatDeviceLabel(
+                        it.deviceName, it.vendor, it.ipAddress, it.macAddress
+                    ),
+                    macAddress = it.macAddress,
+                    ipAddress = it.ipAddress,
+                    vendor = it.vendor
+                )
+            })
+        }
+
+        if (hotspotManager.isHotspotOn()) {
+            isHotspotActive = true
+            refreshCredentialsQuietly()
+            setUiStarted()
+            startUptimeTimer()
+            startSyncPolling()
+            if (hotspotManager.getConfirmedSsid().isEmpty()) {
+                handler.postDelayed({ requestSsidConfirm() }, 500)
+            }
+        } else {
+            setUiStopped()
+        }
 
         binding.btnToggleHotspot.setOnClickListener {
-            if (isHotspotActive) stopHotspot()
-            else showHotspotConfigDialog()
+            if (isHotspotActive) {
+                openHotspotSettings()
+                startAutoCheckOff()
+            } else {
+                ssidConfirmPending = true
+                openHotspotSettings()
+                startAutoCheckOn()
+            }
+        }
+
+        binding.tvPassword.setOnClickListener {
+            val ssid = resolveCurrentSsid()
+            if (ssid.isEmpty()) {
+                requestSsidConfirm()
+            } else {
+                passwordDialogShown = false
+                requestPasswordIfNeeded(ssid)
+            }
+        }
+        binding.tvPassword.setOnLongClickListener {
+            showPasswordEditDialog()
+            true
+        }
+
+        binding.btnEditPassword.setOnClickListener {
+            showPasswordEditDialog()
+        }
+
+        binding.tvSsid.setOnClickListener {
+            ssidConfirmPending = true
+            openHotspotSettings()
+        }
+        binding.tvSsid.setOnLongClickListener {
+            requestSsidConfirm()
+            true
+        }
+
+        binding.btnSyncSsid.setOnClickListener {
+            requestSsidConfirm()
         }
 
         binding.btnCopySsid.setOnClickListener {
@@ -60,236 +159,548 @@ class HotspotFragment : Fragment() {
             copyToClipboard("Password", binding.tvPassword.text.toString())
         }
 
-        viewModel.devices.observe(viewLifecycleOwner) { devices ->
-            if (_binding == null) return@observe
-            val count = devices.count { !it.blocked }
-            binding.tvConnectedCount.text = "$count device${if (count != 1) "s" else ""} connected"
-        }
-
         updateWifiSource()
     }
 
-    private fun updateWifiSource() {
-        try {
-            val wm = requireContext().applicationContext
-                .getSystemService(Context.WIFI_SERVICE) as WifiManager
-            @Suppress("DEPRECATION")
-            val ssid = wm.connectionInfo?.ssid?.removePrefix("\"")?.removeSuffix("\"") ?: ""
-            if (ssid.isNotEmpty() && ssid != "<unknown ssid>") {
-                binding.tvWifiSource.text = ssid
-            }
-        } catch (_: Exception) {}
+    // ── Credential sync ───────────────────────────────────────────────────────
+
+    private fun resolveCurrentSsid(): String {
+        val confirmed = hotspotManager.getConfirmedSsid()
+        if (confirmed.isNotEmpty()) return confirmed
+        hotspotManager.readSsidFromPhone()?.let { return it }
+        return binding.tvSsid.text.toString().let { text ->
+            if (isPlaceholderSsid(text)) "" else text.trim()
+        }
     }
 
-    /**
-     * Show dialog to configure SSID and password, then start hotspot
-     */
-    private fun showHotspotConfigDialog() {
-        val layout = LinearLayout(requireContext()).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(60, 20, 60, 20)
+    private fun resolveCurrentPassword(): String =
+        binding.tvPassword.text.toString().let {
+            if (it.startsWith("Tap to enter")) "" else it.trim()
         }
 
-        val ssidInput = EditText(requireContext()).apply {
-            hint = "Hotspot Name (SSID)"
-            setText(hotspotSsid)
+    private fun isPlaceholderSsid(text: String): Boolean =
+        text in listOf("Detecting SSID...", "Tap SYNC to enter name", "—", "")
+
+    private fun isFragmentReady(): Boolean =
+        _binding != null && isAdded && isFragmentResumed
+
+    /** Long-press / EDIT — update saved hotspot password */
+    private fun showPasswordEditDialog() {
+        if (!isFragmentReady()) return
+        val ssid = resolveCurrentSsid()
+        if (ssid.isEmpty()) {
+            showSnack("Set hotspot name first")
+            requestSsidConfirm()
+            return
         }
-
-        val passInput = EditText(requireContext()).apply {
-            hint = "Password (min 8 chars)"
-            setText(hotspotPassword)
+        passwordDialogShown = false
+        showPasswordDialog(ssid, resolveCurrentPassword(), isEdit = true)
+    }
+    private fun requestSsidConfirm(prefill: String = hotspotManager.getConfirmedSsid()) {
+        if (!isFragmentReady()) return
+        if (ssidConfirmDialog?.isShowing == true) return
+        if (!hotspotManager.isHotspotOn() && prefill.isEmpty()) {
+            showSnack("Turn on hotspot first")
+            return
         }
+        showSsidConfirmDialog(prefill)
+    }
 
-        layout.addView(ssidInput)
-        layout.addView(passInput)
+    /** Show password dialog only after SSID is known — never stack with SSID dialog */
+    private fun requestPasswordIfNeeded(ssid: String) {
+        if (!isFragmentReady() || ssid.isEmpty()) return
+        if (ssidConfirmDialog?.isShowing == true) return
+        if (passwordDialog?.isShowing == true) return
 
-        AlertDialog.Builder(requireContext())
-            .setTitle("📡 Configure Hotspot")
-            .setView(layout)
-            .setPositiveButton("Start") { _, _ ->
-                val ssid = ssidInput.text.toString().trim()
-                val pass = passInput.text.toString().trim()
-                if (ssid.isEmpty()) {
-                    showSnack("❌ SSID cannot be empty")
-                    return@setPositiveButton
+        val pass = hotspotManager.readPasswordForSsid(ssid)
+        if (pass.length >= 8) {
+            binding.tvPassword.text = pass
+            passwordDialogShown = false
+            syncToBackendIfNeeded(ssid, pass)
+            return
+        }
+        if (!passwordDialogShown) {
+            passwordDialogShown = true
+            showPasswordSetupDialog(ssid)
+        }
+    }
+
+    /** Refresh SSID/password on screen without opening any dialogs */
+    private fun refreshCredentialsQuietly() {
+        if (_binding == null) return
+        ssidRetryRunnable?.let { handler.removeCallbacks(it) }
+
+        val autoSsid = hotspotManager.readSsidFromPhone()
+        val displaySsid = autoSsid ?: hotspotManager.getConfirmedSsid()
+
+        if (displaySsid.isNotEmpty()) {
+            applyCredentials(displaySsid, showPasswordDialog = false)
+        } else if (hotspotManager.isHotspotOn()) {
+            binding.tvSsid.text = "Tap SYNC to enter name"
+            binding.tvPassword.text = "Tap to enter password →"
+        }
+    }
+
+    /** Retry SSID read — SoftAp config may not be ready the instant hotspot turns on */
+    private fun syncCredentialsWithRetry(showPasswordDialog: Boolean = true) {
+        if (_binding == null) return
+        ssidRetryRunnable?.let { handler.removeCallbacks(it) }
+        binding.tvSsid.text = "Detecting SSID..."
+        var attempts = 0
+        ssidRetryRunnable = object : Runnable {
+            override fun run() {
+                if (_binding == null) return
+                attempts++
+                val autoSsid = hotspotManager.readSsidFromPhone()
+                val displaySsid = autoSsid ?: hotspotManager.getConfirmedSsid()
+                if (displaySsid.isNotEmpty()) {
+                    applyCredentials(displaySsid, showPasswordDialog)
+                    ssidRetryRunnable = null
+                } else if (attempts < 12) {
+                    handler.postDelayed(this, 400)
+                } else {
+                    binding.tvSsid.text = "Tap SYNC to enter name"
+                    binding.tvPassword.text = "Tap to enter password →"
+                    ssidRetryRunnable = null
                 }
-                if (pass.length < 8) {
-                    showSnack("❌ Password must be at least 8 characters")
-                    return@setPositiveButton
-                }
-                hotspotSsid = ssid
-                hotspotPassword = pass
-                startHotspot(ssid, pass)
             }
+        }
+        handler.post(ssidRetryRunnable!!)
+    }
+
+    private fun showSsidConfirmDialog(current: String) {
+        if (!isFragmentReady()) return
+        ssidConfirmDialog?.dismiss()
+        passwordDialog?.dismiss()
+
+        val dialogView = layoutInflater.inflate(R.layout.dialog_hotspot_ssid, null)
+        val messageView = dialogView.findViewById<android.widget.TextView>(R.id.tv_dialog_message)
+        val ssidInput = dialogView.findViewById<com.google.android.material.textfield.TextInputEditText>(R.id.et_ssid)
+        val ssidLayout = dialogView.findViewById<com.google.android.material.textfield.TextInputLayout>(R.id.til_ssid)
+
+        messageView.text = if (hotspotManager.isSystemSsidReadBlocked()) {
+            "Your phone blocks apps from reading the hotspot name automatically.\n\n" +
+                "Open hotspot Settings, check the Network name, then type it exactly below."
+        } else {
+            "Enter the hotspot network name shown in your phone Settings."
+        }
+        ssidInput.setText(current)
+        ssidInput.setSelection(ssidInput.text?.length ?: 0)
+
+        ssidConfirmDialog = AlertDialog.Builder(requireContext())
+            .setView(dialogView)
+            .setPositiveButton("Save", null)
             .setNegativeButton("Cancel", null)
+            .setOnDismissListener { ssidConfirmDialog = null }
+            .create()
+
+        ssidConfirmDialog?.setOnShowListener {
+            val saveBtn = ssidConfirmDialog?.getButton(AlertDialog.BUTTON_POSITIVE) ?: return@setOnShowListener
+            saveBtn.setOnClickListener {
+                val ssid = ssidInput.text.toString().trim()
+                if (ssid.isEmpty()) {
+                    ssidLayout.error = "Name is required"
+                    return@setOnClickListener
+                }
+                ssidLayout.error = null
+                hotspotManager.saveConfirmedSsid(ssid)
+                binding.tvSsid.text = ssid
+                ssidConfirmDialog?.dismiss()
+                showSnack("✅ Hotspot name saved: $ssid")
+                handler.postDelayed({ requestPasswordIfNeeded(ssid) }, 250)
+            }
+        }
+        ssidConfirmDialog?.show()
+    }
+
+    private fun applyCredentials(ssid: String, showPasswordDialog: Boolean) {
+        if (_binding == null) return
+        val autoSsid = hotspotManager.readSsidFromPhone()
+        val resolvedSsid = autoSsid ?: ssid.ifEmpty { hotspotManager.readDisplaySsid() }
+        if (resolvedSsid.isNotEmpty()) {
+            binding.tvSsid.text = resolvedSsid
+        } else {
+            binding.tvSsid.text = "—"
+        }
+
+        val password = if (resolvedSsid.isNotEmpty()) {
+            hotspotManager.readPasswordForSsid(resolvedSsid)
+        } else {
+            hotspotManager.readPassword()
+        }
+
+        if (password.isNotEmpty()) {
+            binding.tvPassword.text = password
+            passwordDialogShown = false
+            if (resolvedSsid.isNotEmpty()) syncToBackendIfNeeded(resolvedSsid, password)
+        } else if (showPasswordDialog && !passwordDialogShown && resolvedSsid.isNotEmpty()) {
+            requestPasswordIfNeeded(resolvedSsid)
+        } else {
+            binding.tvPassword.text = "Tap to enter password →"
+        }
+
+        updateConnectedDisplay(hotspotManager.readConnectedClients())
+    }
+
+    /** Force UI to match phone hotspot name — never opens dialogs (polling-safe) */
+    private fun syncUiFromPhone() {
+        if (_binding == null) return
+        val autoSsid = hotspotManager.readSsidFromPhone()
+        val displaySsid = autoSsid ?: hotspotManager.getConfirmedSsid()
+        if (displaySsid.isEmpty()) return
+        binding.tvSsid.text = displaySsid
+        val pass = hotspotManager.readPasswordForSsid(displaySsid)
+        if (pass.isNotEmpty()) {
+            binding.tvPassword.text = pass
+            syncToBackendIfNeeded(displaySsid, pass)
+        }
+    }
+
+    private fun syncCredentials() = syncCredentialsWithRetry()
+
+    private fun syncToBackendIfNeeded(ssid: String, password: String, force: Boolean = false) {
+        if (password.length < 8) return
+        val credentials = ssid to password
+        if (!force && credentials == lastSyncedCredentials) return
+        lastSyncedCredentials = credentials
+        val limit = hotspotMaxClients()
+        viewModel.syncHotspotCredentials(ssid, password, limit)
+    }
+
+    private fun hotspotMaxClients(): Int = when {
+        unlimitedDevices || maxDevices < 0 -> 50
+        maxDevices > 0 -> maxDevices
+        else -> 10
+    }
+
+    private fun savePasswordLocally(ssid: String, password: String) {
+        hotspotManager.savePasswordForSsid(ssid, password)
+        binding.tvPassword.text = password
+        passwordDialogShown = false
+        lastSyncedCredentials = null
+        syncToBackendIfNeeded(ssid, password, force = true)
+    }
+
+    private fun updateConnectedDisplay(clients: List<ConnectedClient>) {
+        if (_binding == null) return
+        val count = clients.size
+        binding.tvConnectedCount.text = "$count device${if (count != 1) "s" else ""} connected"
+        binding.tvConnectedNames.text = if (clients.isEmpty()) {
+            "No devices connected yet"
+        } else {
+            clients.joinToString("\n") { client ->
+                val label = com.wifiextender.utils.DeviceNameResolver.formatDeviceLabel(
+                    client.name, client.vendor, client.ipAddress, client.macAddress ?: ""
+                )
+                "• $label"
+            }
+        }
+        binding.tvConnectedNames.visibility = View.VISIBLE
+        enforceDeviceLimit(count)
+    }
+
+    private fun applyAndSaveCredentials(ssid: String, password: String) {
+        if (_binding == null) return
+        savePasswordLocally(ssid, password)
+
+        val result = hotspotManager.applyHotspotConfig(ssid, password)
+        handler.postDelayed({
+            if (_binding == null) return@postDelayed
+            when (result) {
+                is HotspotApplyResult.Success ->
+                    showSnack("✅ Password updated on phone and app!")
+                is HotspotApplyResult.NeedsHotspotRestart ->
+                    showHotspotRestartDialog(ssid)
+                is HotspotApplyResult.Failed -> {
+                    showSnack("✅ Password saved in app. Also update it in phone Settings → Hotspot.")
+                    if (hotspotManager.isSystemSsidReadBlocked()) {
+                        hotspotManager.openPhoneHotspotSettings()
+                    }
+                }
+            }
+        }, 400)
+    }
+
+    private fun showHotspotRestartDialog(ssid: String) {
+        AlertDialog.Builder(requireContext())
+            .setTitle("Restart hotspot")
+            .setMessage(
+                "Hotspot name was set to \"$ssid\" on your phone.\n\n" +
+                    "Turn hotspot OFF then ON in settings (or tap Restart below) so devices see the new name."
+            )
+            .setPositiveButton("Restart now") { _, _ ->
+                if (hotspotManager.restartHotspot()) {
+                    showSnack("✅ Hotspot restarted with new name!")
+                    handler.postDelayed({ syncCredentialsWithRetry(showPasswordDialog = false) }, 2000)
+                } else {
+                    showSnack("Please toggle hotspot off/on in Settings")
+                    openHotspotSettings()
+                }
+            }
+            .setNegativeButton("Open Settings") { _, _ -> openHotspotSettings() }
             .show()
     }
 
-    @Suppress("DEPRECATION")
-    private fun startHotspot(ssid: String, password: String) {
-        val wm = requireContext().applicationContext
-            .getSystemService(Context.WIFI_SERVICE) as WifiManager
+    private fun showPasswordSetupDialog(detectedSsid: String) {
+        showPasswordDialog(detectedSsid, "", isEdit = false)
+    }
 
-        binding.btnToggleHotspot.text = "Starting..."
-        binding.btnToggleHotspot.isEnabled = false
+    private fun showPasswordDialog(ssid: String, currentPassword: String, isEdit: Boolean) {
+        if (!isFragmentReady()) return
+        if (ssid.isEmpty()) return
+        if (ssidConfirmDialog?.isShowing == true) return
+        passwordDialog?.dismiss()
 
-        try {
-            // Set custom config via reflection
-            val config = WifiConfiguration().apply {
-                SSID = ssid
-                preSharedKey = password
-                allowedAuthAlgorithms.set(WifiConfiguration.AuthAlgorithm.SHARED)
-                allowedProtocols.set(WifiConfiguration.Protocol.RSN)
-                allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK)
-                allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.CCMP)
-                allowedGroupCiphers.set(WifiConfiguration.GroupCipher.CCMP)
+        val dialogView = layoutInflater.inflate(R.layout.dialog_hotspot_password, null)
+        val titleView = dialogView.findViewById<android.widget.TextView>(R.id.tv_dialog_title)
+        val messageView = dialogView.findViewById<android.widget.TextView>(R.id.tv_dialog_message)
+        val networkView = dialogView.findViewById<android.widget.TextView>(R.id.tv_network_name)
+        val miuiHint = dialogView.findViewById<android.widget.TextView>(R.id.tv_miui_hint)
+        val passInput = dialogView.findViewById<com.google.android.material.textfield.TextInputEditText>(R.id.et_password)
+        val passLayout = dialogView.findViewById<com.google.android.material.textfield.TextInputLayout>(R.id.til_password)
+
+        titleView.text = if (isEdit) "Update Password" else "Set Hotspot Password"
+        messageView.text = if (isEdit) {
+            "Change the password clients use to connect to your hotspot."
+        } else {
+            "Enter the password for your hotspot network."
+        }
+        networkView.text = ssid
+        if (hotspotManager.isSystemSsidReadBlocked()) {
+            miuiHint.visibility = View.VISIBLE
+        }
+        passInput.setText(currentPassword)
+        if (currentPassword.isNotEmpty()) {
+            passInput.setSelection(currentPassword.length)
+        }
+
+        passwordDialog = AlertDialog.Builder(requireContext())
+            .setView(dialogView)
+            .setPositiveButton("Save", null)
+            .setNegativeButton(if (isEdit) "Cancel" else "Skip") { _, _ ->
+                if (!isEdit) passwordDialogShown = false
             }
-            try {
-                wm.javaClass.getDeclaredMethod("setWifiApConfiguration", WifiConfiguration::class.java)
-                    .apply { isAccessible = true }.invoke(wm, config)
-            } catch (_: Exception) {}
+            .setOnDismissListener { passwordDialog = null }
+            .create()
 
-            // Try startWifiAp
-            Thread {
-                Thread.sleep(500)
-                var started = false
-                try {
-                    started = wm.javaClass.getDeclaredMethod("startWifiAp", WifiConfiguration::class.java)
-                        .apply { isAccessible = true }.invoke(wm, config) as? Boolean ?: false
-                } catch (_: Exception) {}
-
-                handler.post {
-                    if (_binding == null) return@post
-                    if (started || isSystemHotspotOn()) {
-                        isHotspotActive = true
-                        setUiStarted(ssid, password)
-                        startUptimeTimer()
-                        startDevicePolling()
-                        showSnack("✅ Hotspot '$ssid' started!")
-                    } else {
-                        // Open Quick Settings panel — user flips ONE toggle
-                        binding.btnToggleHotspot.text = "▶  Start Hotspot"
-                        binding.btnToggleHotspot.isEnabled = true
-                        openHotspotToggle()
-                        startAutoCheck(ssid, password)
-                    }
-                }
-            }.start()
-        } catch (_: Exception) {
-            binding.btnToggleHotspot.text = "▶  Start Hotspot"
-            binding.btnToggleHotspot.isEnabled = true
-            openHotspotToggle()
-            startAutoCheck(ssid, password)
-        }
-    }
-
-    private fun openHotspotToggle() {
-        // Show a non-blocking snackbar — no dialog popup
-        if (_binding != null) {
-            Snackbar.make(binding.root, "Flip the hotspot toggle → app auto-detects in 1 sec!", Snackbar.LENGTH_LONG)
-                .setAction("Open") {
-                    try {
-                        val intent = Intent()
-                        intent.setClassName("com.android.settings", "com.android.settings.TetherSettings")
-                        startActivity(intent)
-                    } catch (_: Exception) {
-                        startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
-                    }
-                }.show()
-        }
-    }
-
-    private fun startAutoCheck(ssid: String, password: String) {
-        autoCheckRunnable?.let { handler.removeCallbacks(it) }
-        var checks = 0
-        autoCheckRunnable = object : Runnable {
-            override fun run() {
-                if (isHotspotActive || _binding == null) return
-                checks++
-                if (isSystemHotspotOn()) {
-                    isHotspotActive = true
-                    setUiStarted(ssid, password)
-                    startUptimeTimer()
-                    startDevicePolling()
-                    showSnack("✅ Hotspot '$ssid' is active!")
-                    autoCheckRunnable = null
-                } else if (checks < 30) {
-                    handler.postDelayed(this, 2000)
-                } else {
-                    handler.post {
-                        if (_binding != null) {
-                            binding.btnToggleHotspot.text = "▶  Start Hotspot"
-                            binding.btnToggleHotspot.isEnabled = true
+        passwordDialog?.setOnShowListener {
+            val saveBtn = passwordDialog?.getButton(AlertDialog.BUTTON_POSITIVE) ?: return@setOnShowListener
+            saveBtn.setOnClickListener {
+                val pass = passInput.text.toString()
+                when {
+                    pass.length < 8 -> passLayout.error = "At least 8 characters required"
+                    else -> {
+                        passLayout.error = null
+                        passwordDialog?.dismiss()
+                        if (isEdit) {
+                            applyAndSaveCredentials(ssid, pass)
+                        } else {
+                            savePasswordLocally(ssid, pass)
+                            showSnack("✅ Password saved!")
                         }
                     }
                 }
             }
         }
-        handler.postDelayed(autoCheckRunnable!!, 2000)
+
+        passwordDialog?.show()
+    }
+
+    // ── Polling every 3s ──────────────────────────────────────────────────────
+
+    private fun startSyncPolling() {
+        stopSyncPolling()
+        syncRunnable = object : Runnable {
+            override fun run() {
+                if (_binding == null || !isHotspotActive) return
+                syncUiFromPhone()
+                viewModel.scanAndReportDevices(requireContext())
+                handler.postDelayed(this, 15000)
+            }
+        }
+        handler.postDelayed(syncRunnable!!, 2000)
+    }
+
+    private fun stopSyncPolling() {
+        syncRunnable?.let { handler.removeCallbacks(it) }
+        syncRunnable = null
+    }
+
+    // ── Device limit ──────────────────────────────────────────────────────────
+
+    private fun enforceDeviceLimit(connectedCount: Int) {
+        if (_binding == null) return
+        binding.tvDeviceLimit.visibility = View.VISIBLE
+        when {
+            unlimitedDevices -> {
+                binding.tvDeviceLimit.text = "Devices: $connectedCount / ∞"
+                binding.tvDeviceLimit.setTextColor(ContextCompat.getColor(requireContext(), R.color.brand_primary))
+            }
+            maxDevices > 0 -> {
+                val atLimit = connectedCount >= maxDevices
+                binding.tvDeviceLimit.text =
+                    if (atLimit) "⚠️ Device limit reached ($connectedCount / $maxDevices)"
+                    else "Devices: $connectedCount / $maxDevices"
+                binding.tvDeviceLimit.setTextColor(ContextCompat.getColor(requireContext(),
+                    if (atLimit) R.color.red_500 else R.color.brand_primary))
+            }
+            else -> {
+                binding.tvDeviceLimit.text = "Devices: $connectedCount (no active plan)"
+                binding.tvDeviceLimit.setTextColor(ContextCompat.getColor(requireContext(), R.color.text_secondary))
+            }
+        }
+    }
+
+    private fun updateDeviceLimitBadge() {
+        if (_binding == null || !isHotspotActive) return
+        val onlineCount = viewModel.devices.value
+            ?.count { it.online && !it.blocked }
+            ?: hotspotManager.readClientCount()
+        enforceDeviceLimit(onlineCount)
+    }
+
+    // ── Auto-check: wait until hotspot ON / OFF ───────────────────────────────
+
+    private fun startAutoCheckOn() {
+        autoCheckRunnable?.let { handler.removeCallbacks(it) }
+        binding.btnToggleHotspot.text = "Waiting for hotspot..."
+        binding.btnToggleHotspot.isEnabled = false
+        var checks = 0
+        autoCheckRunnable = object : Runnable {
+            override fun run() {
+                if (_binding == null) return
+                checks++
+                if (hotspotManager.isHotspotOn()) {
+                    isHotspotActive = true
+                    passwordDialogShown = false
+                    lastSyncedCredentials = null
+                    refreshCredentialsQuietly()
+                    setUiStarted()
+                    startUptimeTimer()
+                    startSyncPolling()
+                    autoCheckRunnable = null
+                } else if (checks < 40) {
+                    handler.postDelayed(this, 1500)
+                } else {
+                    binding.btnToggleHotspot.text = "▶  Start Hotspot"
+                    binding.btnToggleHotspot.isEnabled = true
+                    autoCheckRunnable = null
+                }
+            }
+        }
+        handler.postDelayed(autoCheckRunnable!!, 1500)
+    }
+
+    private fun startAutoCheckOff() {
+        autoCheckRunnable?.let { handler.removeCallbacks(it) }
+        var checks = 0
+        autoCheckRunnable = object : Runnable {
+            override fun run() {
+                if (_binding == null) return
+                checks++
+                if (!hotspotManager.isHotspotOn()) {
+                    isHotspotActive = false
+                    lastSyncedCredentials = null
+                    setUiStopped()
+                    stopUptimeTimer()
+                    stopSyncPolling()
+                    autoCheckRunnable = null
+                } else if (checks < 20) {
+                    handler.postDelayed(this, 1500)
+                } else {
+                    autoCheckRunnable = null
+                }
+            }
+        }
+        handler.postDelayed(autoCheckRunnable!!, 1500)
     }
 
     override fun onResume() {
         super.onResume()
+        isFragmentResumed = true
         updateWifiSource()
-        if (!isHotspotActive && isSystemHotspotOn()) {
-            isHotspotActive = true
-            setUiStarted(hotspotSsid, hotspotPassword)
-            if (uptimeRunnable == null) startUptimeTimer()
-            if (devicePollRunnable == null) startDevicePolling()
-        }
-    }
+        val hotspotOn = hotspotManager.isHotspotOn()
 
-    private fun stopHotspot() {
-        try {
-            val wm = requireContext().applicationContext
-                .getSystemService(Context.WIFI_SERVICE) as WifiManager
-            val stopMethod = wm.javaClass.getDeclaredMethod("stopWifiAp")
-            stopMethod.isAccessible = true
-            stopMethod.invoke(wm)
-        } catch (_: Exception) {
-            showSnackWithAction("Turn OFF hotspot in Settings.", "Open") {
-                startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
+        when {
+            !isHotspotActive && hotspotOn -> {
+                isHotspotActive = true
+                autoCheckRunnable?.let { handler.removeCallbacks(it) }
+                passwordDialogShown = false
+                lastSyncedCredentials = null
+                refreshCredentialsQuietly()
+                setUiStarted()
+                if (uptimeRunnable == null) startUptimeTimer()
+                if (syncRunnable == null) startSyncPolling()
             }
+            isHotspotActive && !hotspotOn -> {
+                isHotspotActive = false
+                lastSyncedCredentials = null
+                ssidConfirmPending = false
+                ssidRetryRunnable?.let { handler.removeCallbacks(it) }
+                ssidConfirmDialog?.dismiss()
+                passwordDialog?.dismiss()
+                setUiStopped()
+                stopUptimeTimer()
+                stopSyncPolling()
+            }
+            isHotspotActive -> syncUiFromPhone()
         }
-        isHotspotActive = false
-        setUiStopped()
-        stopUptimeTimer()
-        stopDevicePolling()
-        autoCheckRunnable?.let { handler.removeCallbacks(it) }
+
+        if (ssidConfirmPending && hotspotOn) {
+            ssidConfirmPending = false
+            handler.postDelayed({ requestSsidConfirm() }, 350)
+        }
     }
 
-    private fun isSystemHotspotOn(): Boolean {
-        return try {
-            val wm = requireContext().applicationContext
-                .getSystemService(Context.WIFI_SERVICE) as WifiManager
-            wm.javaClass.getDeclaredMethod("isWifiApEnabled")
-                .apply { isAccessible = true }.invoke(wm) as? Boolean ?: false
-        } catch (_: Exception) { false }
+    override fun onPause() {
+        isFragmentResumed = false
+        super.onPause()
     }
 
-    private fun setUiStarted(ssid: String, password: String) {
+    // ── UI ────────────────────────────────────────────────────────────────────
+
+    private fun setUiStarted() {
         if (_binding == null) return
         binding.btnToggleHotspot.isEnabled = true
         binding.btnToggleHotspot.text = "⏹  Stop Hotspot"
-        binding.btnToggleHotspot.setBackgroundColor(ContextCompat.getColor(requireContext(), R.color.red_500))
+        binding.btnToggleHotspot.setBackgroundColor(
+            ContextCompat.getColor(requireContext(), R.color.red_500))
         binding.tvHotspotStatus.text = "🟢 Hotspot Active"
-        binding.tvHotspotStatus.setTextColor(ContextCompat.getColor(requireContext(), R.color.green_500))
+        binding.tvHotspotStatus.setTextColor(
+            ContextCompat.getColor(requireContext(), R.color.green_500))
         binding.cardHotspotInfo.visibility = View.VISIBLE
-        binding.tvSsid.text = ssid
-        binding.tvPassword.text = password.ifEmpty { "(open network)" }
     }
 
     private fun setUiStopped() {
         if (_binding == null) return
         binding.btnToggleHotspot.isEnabled = true
         binding.btnToggleHotspot.text = "▶  Start Hotspot"
-        binding.btnToggleHotspot.setBackgroundColor(ContextCompat.getColor(requireContext(), R.color.brand_primary))
+        binding.btnToggleHotspot.setBackgroundColor(
+            ContextCompat.getColor(requireContext(), R.color.brand_primary))
         binding.tvHotspotStatus.text = "⚫ Hotspot Inactive"
-        binding.tvHotspotStatus.setTextColor(ContextCompat.getColor(requireContext(), R.color.text_secondary))
+        binding.tvHotspotStatus.setTextColor(
+            ContextCompat.getColor(requireContext(), R.color.text_secondary))
         binding.cardHotspotInfo.visibility = View.GONE
+        binding.tvDeviceLimit.visibility = View.GONE
+        binding.tvConnectedCount.text = "0 devices connected"
+        binding.tvConnectedNames.text = ""
+        binding.tvConnectedNames.visibility = View.GONE
         binding.tvUptime.text = "00:00:00"
-        binding.tvConnectedCount.text = "0 devices"
         uptimeSeconds = 0
+    }
+
+    private fun updateWifiSource() {
+        if (_binding == null) return
+        try {
+            val wm = requireContext().applicationContext
+                .getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+            @Suppress("DEPRECATION")
+            val ssid = wm.connectionInfo?.ssid
+                ?.removePrefix("\"")?.removeSuffix("\"") ?: ""
+            if (ssid.isNotEmpty() && ssid != "<unknown ssid>") {
+                binding.tvWifiSource.text = ssid
+            }
+        } catch (_: Exception) {}
     }
 
     private fun startUptimeTimer() {
@@ -313,22 +724,11 @@ class HotspotFragment : Fragment() {
         uptimeRunnable = null
     }
 
-    private fun startDevicePolling() {
-        viewModel.scanAndReportDevices(requireContext())
-        devicePollRunnable = object : Runnable {
-            override fun run() {
-                if (isHotspotActive) {
-                    viewModel.scanAndReportDevices(requireContext())
-                    handler.postDelayed(this, 8000)
-                }
-            }
+    private fun openHotspotSettings() {
+        if (!hotspotManager.openPhoneHotspotSettings()) {
+            try { startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS)) }
+            catch (_: Exception) { startActivity(Intent(Settings.ACTION_SETTINGS)) }
         }
-        handler.postDelayed(devicePollRunnable!!, 3000)
-    }
-
-    private fun stopDevicePolling() {
-        devicePollRunnable?.let { handler.removeCallbacks(it) }
-        devicePollRunnable = null
     }
 
     private fun copyToClipboard(label: String, text: String) {
@@ -341,16 +741,13 @@ class HotspotFragment : Fragment() {
         if (_binding != null) Snackbar.make(binding.root, msg, Snackbar.LENGTH_LONG).show()
     }
 
-    private fun showSnackWithAction(msg: String, action: String, onClick: () -> Unit) {
-        if (_binding != null)
-            Snackbar.make(binding.root, msg, Snackbar.LENGTH_INDEFINITE)
-                .setAction(action) { onClick() }.show()
-    }
-
     override fun onDestroyView() {
         stopUptimeTimer()
-        stopDevicePolling()
+        stopSyncPolling()
+        ssidRetryRunnable?.let { handler.removeCallbacks(it) }
         autoCheckRunnable?.let { handler.removeCallbacks(it) }
+        passwordDialog?.dismiss()
+        ssidConfirmDialog?.dismiss()
         super.onDestroyView()
         _binding = null
     }

@@ -6,6 +6,7 @@ import android.view.View
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.snackbar.Snackbar
+import com.wifiextender.data.api.ApiConfig
 import com.wifiextender.data.api.RetrofitClient
 import com.wifiextender.data.prefs.TokenManager
 import com.wifiextender.databinding.ActivityLoginBinding
@@ -23,16 +24,23 @@ class LoginActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         tokenManager = TokenManager(this)
-        RetrofitClient.init(tokenManager)
+        RetrofitClient.init(tokenManager, this)
+
+        binding.etServerUrl.setText(ApiConfig.getBaseUrl(this))
 
         binding.btnLogin.setOnClickListener {
             val email    = binding.etEmail.text.toString().trim()
             val password = binding.etPassword.text.toString()
+            val serverUrl = binding.etServerUrl.text.toString().trim()
             if (email.isEmpty() || password.isEmpty()) {
                 showError("Please fill in all fields")
                 return@setOnClickListener
             }
-            viewModel.login(email, password) { access, refresh, user ->
+            if (serverUrl.isNotEmpty()) {
+                ApiConfig.setBaseUrl(this, serverUrl)
+                RetrofitClient.resetApi()
+            }
+            viewModel.login(email, password, ApiConfig.getBaseUrl(this)) { access, refresh, user ->
                 tokenManager.saveTokens(access, refresh)
                 tokenManager.saveUser(user)
             }

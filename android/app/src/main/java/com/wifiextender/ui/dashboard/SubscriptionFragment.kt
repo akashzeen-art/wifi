@@ -12,7 +12,6 @@ import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.snackbar.Snackbar
-import com.wifiextender.data.model.Plan
 import com.wifiextender.databinding.FragmentSubscriptionBinding
 import com.wifiextender.ui.dashboard.adapter.PlanAdapter
 
@@ -94,18 +93,26 @@ class SubscriptionFragment : Fragment() {
         viewModel.loadPlansAndSubs()
     }
 
-    private fun confirmRequest(plan: Plan) {
-        AlertDialog.Builder(requireContext())
-            .setTitle("Activate ${plan.name}?")
-            .setMessage(
-                "Price: $${plan.price}\n" +
-                "Devices: ${if (plan.unlimitedDevices) "Unlimited" else plan.maxDevices.toString()}\n" +
-                "Duration: ${if (plan.lifetime) "Lifetime" else "${plan.durationDays} days"}\n\n" +
-                "Your license key will be generated instantly."
-            )
-            .setPositiveButton("Activate") { _, _ -> viewModel.requestPlan(plan.id) }
-            .setNegativeButton("Cancel", null)
-            .show()
+    private fun confirmRequest(plan: com.wifiextender.data.model.Plan) {
+        if (plan.planType == "FREE_TRIAL" || plan.price == 0.0) {
+            // Free plans activate directly
+            AlertDialog.Builder(requireContext())
+                .setTitle("Activate ${plan.name}?")
+                .setMessage(
+                    "Duration: ${plan.durationDays} days\n" +
+                    "Devices: ${if (plan.unlimitedDevices) "Unlimited" else plan.maxDevices.toString()}\n\n" +
+                    "Your license key will be generated instantly."
+                )
+                .setPositiveButton("Activate") { _, _ -> viewModel.requestPlan(plan.id) }
+                .setNegativeButton("Cancel", null)
+                .show()
+        } else {
+            // Paid plans open WebView payment screen
+            parentFragmentManager.beginTransaction()
+                .replace(com.wifiextender.R.id.fragment_container, PaymentFragment.newInstance(plan.id))
+                .addToBackStack(null)
+                .commit()
+        }
     }
 
     override fun onDestroyView() { super.onDestroyView(); _binding = null }

@@ -13,7 +13,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -57,9 +59,13 @@ public class DeviceService {
 
         device.setUser(user);
         device.setMacAddress(req.getMacAddress().toUpperCase());
-        device.setDeviceName(req.getDeviceName() != null ? req.getDeviceName() : "Unknown Device");
+        applyDeviceName(device, req.getDeviceName());
         device.setIpAddress(req.getIpAddress());
-        device.setVendor(req.getVendor());
+        if (req.getVendor() != null && !req.getVendor().isBlank()) {
+            device.setVendor(req.getVendor());
+        } else if (device.getVendor() == null || device.getVendor().isBlank()) {
+            device.setVendor(lookupVendorFromMac(req.getMacAddress()));
+        }
         device.setOnline(true);
         device.setLastSeen(LocalDateTime.now());
 
@@ -93,21 +99,35 @@ public class DeviceService {
     // ── Bulk report (desktop app sends all devices at once) ───────────────────
     @Transactional
     public List<DeviceDto.Response> bulkReport(User user, DeviceDto.BulkReportRequest req) {
-        if (req.getDevices() == null || req.getDevices().isEmpty())
-            return List.of();
+        List<DeviceDto.ReportRequest> incoming =
+                req.getDevices() != null ? req.getDevices() : List.of();
 
-        // Check device limit
-        checkDeviceLimit(user, req.getDevices().size());
+        checkConnectedDeviceLimit(user, incoming);
 
+        Set<String> reportedMacs = new HashSet<>();
         List<DeviceDto.Response> results = new ArrayList<>();
-        for (DeviceDto.ReportRequest device : req.getDevices()) {
+        for (DeviceDto.ReportRequest device : incoming) {
+            if (device.getMacAddress() == null || device.getMacAddress().isBlank()) continue;
+            String mac = device.getMacAddress().trim().toUpperCase();
+            reportedMacs.add(mac);
             if (req.getHotspotId() != null) device.setHotspotId(req.getHotspotId());
             results.add(reportDevice(user, device));
         }
 
-        // Publish full list after bulk update
+        markMissingDevicesOffline(user.getId(), reportedMacs);
+
         eventPublisher.publishList(user.getId(), getDevices(user.getId()));
         return results;
+    }
+
+    private void markMissingDevicesOffline(Long userId, Set<String> reportedMacs) {
+        for (ConnectedDevice device : deviceRepository.findActiveByUserId(userId)) {
+            String mac = device.getMacAddress() != null ? device.getMacAddress().toUpperCase() : "";
+            if (!reportedMacs.contains(mac)) {
+                device.setOnline(false);
+                deviceRepository.save(device);
+            }
+        }
     }
 
     // ── Toggle block ──────────────────────────────────────────────────────────
@@ -143,20 +163,68 @@ public class DeviceService {
     }
 
     // ── Device limit check ────────────────────────────────────────────────────
-    public void checkDeviceLimit(User user, int incomingCount) {
+    /** Limit applies to how many devices are connected right now, not historical total. */
+    public void checkConnectedDeviceLimit(User user, List<DeviceDto.ReportRequest> incoming) {
         var subOpt = subscriptionRepository.findActiveByUserId(user.getId());
         if (subOpt.isEmpty()) {
             throw new IllegalStateException("UPGRADE_REQUIRED: No active subscription. Please subscribe to a plan.");
         }
         var sub = subOpt.get();
         if (sub.getPlan().hasUnlimitedDevices()) return;
-        long current = deviceRepository.countOnlineByUserId(user.getId());
-        if (current + incomingCount > sub.getPlan().getMaxDevices()) {
+
+        long connectedNow = incoming.stream()
+                .map(DeviceDto.ReportRequest::getMacAddress)
+                .filter(mac -> mac != null && !mac.isBlank())
+                .map(mac -> mac.trim().toUpperCase())
+                .distinct()
+                .count();
+
+        int maxDevices = sub.getPlan().getMaxDevices();
+        if (connectedNow > maxDevices) {
             throw new IllegalStateException(
                 "UPGRADE_REQUIRED: Device limit reached. Your " + sub.getPlan().getName() +
-                " plan allows only " + sub.getPlan().getMaxDevices() + " device(s). " +
+                " plan allows only " + maxDevices + " device(s). " +
                 "Please upgrade your plan to connect more devices."
             );
         }
+    }
+
+    private void applyDeviceName(ConnectedDevice device, String incoming) {
+        String resolved = incoming != null && !incoming.isBlank() ? incoming.trim() : null;
+        if (resolved == null) {
+            if (device.getDeviceName() == null || device.getDeviceName().isBlank()) {
+                device.setDeviceName("Unknown Device");
+            }
+            return;
+        }
+        if (device.getDeviceName() == null || device.getDeviceName().isBlank() || isGenericDeviceName(device.getDeviceName())) {
+            device.setDeviceName(resolved);
+        } else if (!isGenericDeviceName(resolved)) {
+            device.setDeviceName(resolved);
+        }
+    }
+
+    private boolean isGenericDeviceName(String name) {
+        if (name == null || name.isBlank()) return true;
+        String n = name.trim();
+        return n.equalsIgnoreCase("unknown device")
+            || n.matches("(?i)^device\\s+\\d{1,3}(\\.\\d{1,3}){3}$")
+            || n.matches("(?i)^device\\s+[0-9a-f:]{11,17}$")
+            || n.matches("(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$");
+    }
+
+    private String lookupVendorFromMac(String mac) {
+        if (mac == null || mac.length() < 8) return null;
+        String oui = mac.toUpperCase().replace('-', ':').substring(0, 8);
+        return switch (oui) {
+            case "00:03:93", "A4:83:E7", "F0:DB:E2", "AC:BC:32", "D0:03:4B" -> "Apple";
+            case "34:AA:99", "50:01:BB", "94:35:0A", "E4:7C:A6" -> "Samsung";
+            case "64:B4:73", "74:23:44", "98:FA:E3", "F8:A4:5F" -> "Xiaomi";
+            case "00:1A:11", "94:EB:2C", "F4:F5:E8" -> "Google";
+            case "00:1E:06", "94:65:2D", "C0:EE:FB" -> "OnePlus";
+            case "00:0E:C6", "10:BF:48" -> "ASUS";
+            case "00:04:20", "E4:B3:18" -> "Lenovo";
+            default -> null;
+        };
     }
 }

@@ -89,6 +89,20 @@
 
             </LinearLayout>
 
+            <!-- Start Hotspot Button -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_start_hotspot"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="24dp"
+                android:text="Start Hotspot"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                app:icon="@drawable/ic_wifi_logo"
+                app:iconGravity="textStart"
+                app:cornerRadius="16dp"
+                android:backgroundTint="@color/brand_primary" />
+
             <!-- No subscription message -->
             <com.google.android.material.card.MaterialCardView
                 android:id="@+id/tv_no_sub"

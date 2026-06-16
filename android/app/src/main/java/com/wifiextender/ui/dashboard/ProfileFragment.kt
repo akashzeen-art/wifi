@@ -27,13 +27,14 @@ class ProfileFragment : Fragment() {
         binding.tvName.text  = user?.name ?: "—"
         binding.tvEmail.text = user?.email ?: "—"
         binding.tvRole.text  = user?.role ?: "USER"
+        binding.tvAvatar.text = user?.name?.firstOrNull()?.uppercaseChar()?.toString() ?: "U"
 
         if (user?.role == "ADMIN") {
             binding.tvRole.setBackgroundResource(com.wifiextender.R.drawable.bg_badge_admin)
         }
 
         binding.tvAppVersion.text = "WiFiExtender v1.0.0"
-        binding.tvBackendUrl.text = com.wifiextender.BuildConfig.BASE_URL
+        binding.tvBackendUrl.text = com.wifiextender.data.api.ApiConfig.getBaseUrl(requireContext())
 
         binding.btnLogout.setOnClickListener {
             androidx.appcompat.app.AlertDialog.Builder(requireContext())

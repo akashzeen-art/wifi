@@ -24,13 +24,13 @@ public class DataSeeder implements CommandLineRunner {
     public void run(String... args) {
         userRepository.findByEmail("admin@wifiextender.com").ifPresentOrElse(
             admin -> {
-                admin.setPassword(passwordEncoder.encode("admin123"));
-                admin.setActive(true);
-                admin.setFailedAttempts(0);
-                admin.setLockedUntil(null);
-                admin.setRole(User.Role.ADMIN);
-                userRepository.save(admin);
-                log.info("Admin password reset on startup");
+                if (!admin.isActive() || admin.getLockedUntil() != null || admin.getFailedAttempts() > 0) {
+                    admin.setActive(true);
+                    admin.setFailedAttempts(0);
+                    admin.setLockedUntil(null);
+                    userRepository.save(admin);
+                    log.info("Admin account unlocked");
+                }
             },
             () -> {
                 User admin = new User();

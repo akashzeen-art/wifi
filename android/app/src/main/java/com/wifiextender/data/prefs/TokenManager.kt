@@ -27,7 +27,12 @@ class TokenManager(context: Context) {
 
     fun getUser(): UserInfo? {
         val json = prefs.getString(KEY_USER, null) ?: return null
-        return gson.fromJson(json, UserInfo::class.java)
+        return try {
+            gson.fromJson(json, UserInfo::class.java)
+        } catch (_: Exception) {
+            prefs.edit().remove(KEY_USER).apply()
+            null
+        }
     }
 
     fun isLoggedIn(): Boolean = getAccessToken() != null

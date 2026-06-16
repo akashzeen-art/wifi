@@ -75,6 +75,12 @@ interface ApiService {
     @POST("hotspots/{id}/stop")
     suspend fun stopHotspotById(@Path("id") id: Long): Response<Map<String, Any>>
 
+    @PUT("hotspots/{id}")
+    suspend fun updateHotspot(
+        @Path("id") id: Long,
+        @Body body: Map<String, Any>
+    ): Response<Map<String, Any>>
+
     // ── Admin ─────────────────────────────────────────────────────────────────
     @GET("admin/stats")
     suspend fun getAdminStats(): Response<AdminStats>
