@@ -91,6 +91,7 @@ WorkingDirectory=${APP_DIR}
 ExecStart=/usr/bin/java -jar ${APP_DIR}/wifi-extender.jar
 Restart=on-failure
 RestartSec=10
+Environment="SERVER_PORT=8082"
 Environment="SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/wifi_extender"
 Environment="SPRING_DATASOURCE_USERNAME=wifiuser"
 Environment="SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD}"
