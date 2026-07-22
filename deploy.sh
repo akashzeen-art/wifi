@@ -1,29 +1,44 @@
 #!/bin/bash
-# Deploy WiFi Extender on Ubuntu VPS (HTTP / IP only)
-# Usage: sudo ./deploy.sh <SERVER_IP>
-# Example: sudo ./deploy.sh 203.0.113.50
+# Deploy WiFi Extender on Ubuntu VPS
+# Usage:
+#   sudo ./deploy.sh 159.253.60.41
+#   sudo ./deploy.sh 159.253.60.41 wifi.vault-x.world
+#   sudo DOMAIN=wifi.vault-x.world ./deploy.sh 159.253.60.41
 set -euo pipefail
 
-SERVER_IP="${1:?Usage: sudo ./deploy.sh <SERVER_IP>}"
+SERVER_IP="${1:?Usage: sudo ./deploy.sh <SERVER_IP> [DOMAIN]}"
+DOMAIN="${2:-${DOMAIN:-wifi.vault-x.world}}"
 APP_DIR="/var/www/wifi"
 JAVA_VERSION="21"
 DB_PASSWORD="${DB_PASSWORD:-securepassword}"
 JWT_SECRET="${APP_JWT_SECRET:-$(openssl rand -hex 32)}"
-FRONTEND_URL="http://${SERVER_IP}"
-CORS_ORIGINS="http://${SERVER_IP},http://localhost:5173"
 
-echo "=== WiFi Extender deploy → ${FRONTEND_URL} ==="
-echo "App dir: ${APP_DIR}"
+# Prefer HTTPS domain when SSL cert exists; otherwise HTTP domain + IP
+if [[ -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ]]; then
+  FRONTEND_URL="https://${DOMAIN}"
+  USE_SSL=1
+else
+  FRONTEND_URL="http://${DOMAIN}"
+  USE_SSL=0
+fi
+
+CORS_ORIGINS="https://${DOMAIN},http://${DOMAIN},http://${SERVER_IP},https://${SERVER_IP},http://localhost:5173"
+
+echo "=== WiFi Extender deploy ==="
+echo "Domain:    ${DOMAIN}"
+echo "Server IP: ${SERVER_IP}"
+echo "Frontend:  ${FRONTEND_URL}"
+echo "App dir:   ${APP_DIR}"
 
 if [[ $EUID -ne 0 ]]; then
-  echo "Run as root: sudo ./deploy.sh ${SERVER_IP}"
+  echo "Run as root: sudo ./deploy.sh ${SERVER_IP} ${DOMAIN}"
   exit 1
 fi
 
 # ── Packages (first run only) ────────────────────────────────────────────────
 if ! command -v nginx &>/dev/null; then
   apt-get update -y
-  apt-get install -y nginx postgresql postgresql-contrib curl git
+  apt-get install -y nginx postgresql postgresql-contrib curl git certbot python3-certbot-nginx
 fi
 
 if ! command -v java &>/dev/null || ! java -version 2>&1 | grep -q "21"; then
@@ -91,8 +106,14 @@ systemctl daemon-reload
 systemctl enable wifi-extender
 systemctl restart wifi-extender
 
-# ── NGINX (HTTP / IP) ───────────────────────────────────────────────────────
+# ── NGINX ────────────────────────────────────────────────────────────────────
+# Always keep HTTP (IP + domain) working
 cp "${APP_DIR}/nginx/wifi-extender-ip.conf" /etc/nginx/sites-available/wifi-extender
+# If SSL cert exists, use HTTPS domain config as primary
+if [[ "${USE_SSL}" -eq 1 ]]; then
+  cp "${APP_DIR}/nginx/wifi-extender.conf" /etc/nginx/sites-available/wifi-extender-ssl
+  ln -sf /etc/nginx/sites-available/wifi-extender-ssl /etc/nginx/sites-enabled/wifi-extender-ssl
+fi
 ln -sf /etc/nginx/sites-available/wifi-extender /etc/nginx/sites-enabled/wifi-extender
 rm -f /etc/nginx/sites-enabled/default
 nginx -t
@@ -100,8 +121,14 @@ systemctl reload nginx
 
 echo ""
 echo "=== Deployment complete ==="
-echo "Frontend:  ${FRONTEND_URL}"
+echo "Domain:    https://${DOMAIN}  (or http://${DOMAIN} if SSL not issued yet)"
+echo "IP:        http://${SERVER_IP}"
 echo "API:       ${FRONTEND_URL}/api"
 echo "Admin:     admin@wifiextender.com / admin123  (change after first login)"
+echo ""
+echo "If SSL is not set up yet, run:"
+echo "  sudo certbot --nginx -d ${DOMAIN}"
+echo "  sudo ./deploy.sh ${SERVER_IP} ${DOMAIN}"
+echo ""
 echo "Service:   systemctl status wifi-extender"
 echo "Logs:      journalctl -u wifi-extender -f"
