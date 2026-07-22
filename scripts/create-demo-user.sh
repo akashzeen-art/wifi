@@ -4,7 +4,7 @@
 # Example: ./scripts/create-demo-user.sh https://wifi.vault-x.world
 set -euo pipefail
 
-BASE="${1:-http://127.0.0.1:8080}"
+BASE="${1:-http://127.0.0.1:8082}"
 EMAIL="demo@wifiextender.com"
 PASS="demo123"
 NAME="Demo User"
@@ -31,26 +31,26 @@ fi
 
 if [[ -z "${TOKEN:-}" ]]; then
   echo "ERROR: could not get access token. Check email/password or API URL."
+  echo "Login response was empty — is the backend up on ${BASE}?"
   exit 1
 fi
 
 # Pick Premium plan (fallback Basic / first plan)
 PLANS=$(curl -s "${BASE}/api/subscriptions/plans" -H "Authorization: Bearer ${TOKEN}")
-PLAN_ID=$(echo "$PLANS" | python3 - <<'PY'
-import sys, json
-plans = json.load(sys.stdin)
-prefer = ["Premium", "Basic", "Starter", "Free Trial"]
-by_name = {p.get("name",""): p.get("id") for p in plans}
+PLAN_ID=$(python3 -c "
+import json, sys
+plans = json.loads(sys.argv[1] or '[]')
+prefer = ['Premium', 'Basic', 'Starter', 'Free Trial']
+by_name = {p.get('name',''): p.get('id') for p in plans}
 for name in prefer:
     if name in by_name:
         print(by_name[name]); break
 else:
-    print(plans[0]["id"] if plans else "")
-PY
-)
+    print(plans[0]['id'] if plans else '')
+" "$PLANS")
 
 if [[ -z "$PLAN_ID" ]]; then
-  echo "ERROR: no plans found"
+  echo "ERROR: no plans found. Response: ${PLANS}"
   exit 1
 fi
 
