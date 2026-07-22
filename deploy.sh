@@ -63,7 +63,12 @@ sudo -u postgres psql -d wifi_extender -c "GRANT ALL ON SCHEMA public TO wifiuse
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE wifi_extender TO wifiuser;" 2>/dev/null || true
 
 mkdir -p "${APP_DIR}/downloads"
+# Copy desktop/Android installers into the NGINX downloads folder if present
+cp -f "${APP_DIR}/frontend/public/downloads/"* "${APP_DIR}/downloads/" 2>/dev/null || true
+cp -f "${APP_DIR}/frontend/dist/downloads/"* "${APP_DIR}/downloads/" 2>/dev/null || true
+cp -f "${APP_DIR}/desktop-app/dist/"*.exe "${APP_DIR}/downloads/wifi-extender-setup.exe" 2>/dev/null || true
 chown -R "${SUDO_USER:-www-data}:${SUDO_USER:-www-data}" "${APP_DIR}" 2>/dev/null || true
+chmod -R a+rX "${APP_DIR}/downloads" 2>/dev/null || true
 
 # ── Build frontend ───────────────────────────────────────────────────────────
 cd "${APP_DIR}/frontend"
