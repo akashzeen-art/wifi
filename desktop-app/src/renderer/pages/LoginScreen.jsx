@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { Wifi, Eye, EyeOff, ArrowRight, AlertCircle } from 'lucide-react'
 import api from '../lib/api'
@@ -7,16 +7,40 @@ import TitleBar from '../components/TitleBar'
 
 export default function LoginScreen() {
   const [form,     setForm]     = useState({ email: '', password: '' })
+  const [apiUrl,   setApiUrl]   = useState('https://wifi.vault-x.world')
   const [showPass, setShowPass] = useState(false)
   const [error,    setError]    = useState('')
   const [loading,  setLoading]  = useState(false)
   const setAuth = useAppStore(s => s.setAuth)
+
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const settings = await window.electron.settings.get()
+        let url = settings?.apiUrl || 'https://wifi.vault-x.world'
+        if (url.includes('localhost') || url.includes('127.0.0.1')) {
+          url = 'https://wifi.vault-x.world'
+        }
+        setApiUrl(url.replace(/\/+$/, ''))
+        window.__apiUrl = url.replace(/\/+$/, '')
+      } catch (_) {
+        window.__apiUrl = 'https://wifi.vault-x.world'
+      }
+    })()
+  }, [])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
     setLoading(true)
     try {
+      const server = (apiUrl || 'https://wifi.vault-x.world').trim().replace(/\/+$/, '')
+      window.__apiUrl = server
+      try {
+        const settings = await window.electron.settings.get()
+        await window.electron.settings.save({ ...settings, apiUrl: server })
+      } catch (_) {}
+
       const { data } = await api.post('/auth/login', form)
       const user = {
         name:  data.user?.name  || data.name  || form.email.split('@')[0],
@@ -28,8 +52,15 @@ export default function LoginScreen() {
       await window.electron.store.set('token', token)
       await window.electron.store.set('user', user)
       setAuth(token, user)
-    } catch {
-      setError('Invalid email or password')
+    } catch (err) {
+      const status = err?.response?.status
+      if (!err?.response) {
+        setError('Cannot reach server. Check internet or Server URL below.')
+      } else if (status === 401 || status === 400) {
+        setError('Invalid email or password')
+      } else {
+        setError(`Login failed (${status || 'error'}). Try again.`)
+      }
     } finally {
       setLoading(false)
     }
@@ -68,6 +99,18 @@ export default function LoginScreen() {
             )}
 
             <form onSubmit={handleSubmit} className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1.5">Server URL</label>
+                <input
+                  type="url"
+                  className="input-field"
+                  placeholder="https://wifi.vault-x.world"
+                  value={apiUrl}
+                  onChange={e => setApiUrl(e.target.value)}
+                  required
+                />
+              </div>
+
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-1.5">Email</label>
                 <input
@@ -121,7 +164,7 @@ export default function LoginScreen() {
 
           <p className="text-center text-xs text-slate-400 mt-4">
             Need an account?{' '}
-            <span className="text-brand-600 font-medium">Visit app.wifiextender.com</span>
+            <span className="text-brand-600 font-medium">Visit wifi.vault-x.world</span>
           </p>
         </motion.div>
       </div>

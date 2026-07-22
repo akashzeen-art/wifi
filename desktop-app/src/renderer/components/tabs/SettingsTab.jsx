@@ -46,7 +46,7 @@ export default function SettingsTab({ licenseKey, licenseData }) {
     minimizeToTray:  true,
     autoLogin:       true,
     refreshInterval: 8,
-    apiUrl:          'http://localhost:8080',
+    apiUrl:          'https://wifi.vault-x.world',
   })
   const [saved,   setSaved]   = useState(false)
   const [loading, setLoading] = useState(true)
@@ -57,7 +57,14 @@ export default function SettingsTab({ licenseKey, licenseData }) {
       window.electron.settings.get(),
       window.electron.machine.info(),
     ]).then(([s, m]) => {
-      if (s) setSettings(s)
+      if (s) {
+        let apiUrl = s.apiUrl || 'https://wifi.vault-x.world'
+        if (apiUrl.includes('localhost') || apiUrl.includes('127.0.0.1')) {
+          apiUrl = 'https://wifi.vault-x.world'
+        }
+        setSettings({ ...s, apiUrl })
+        window.__apiUrl = apiUrl.replace(/\/+$/, '')
+      }
       setMachineInfo(m)
     }).finally(() => setLoading(false))
   }, [])
@@ -65,7 +72,11 @@ export default function SettingsTab({ licenseKey, licenseData }) {
   const set = (key) => (val) => setSettings(s => ({ ...s, [key]: val }))
 
   const handleSave = async () => {
-    await window.electron.settings.save(settings)
+    const apiUrl = (settings.apiUrl || 'https://wifi.vault-x.world').replace(/\/+$/, '')
+    const next = { ...settings, apiUrl }
+    await window.electron.settings.save(next)
+    window.__apiUrl = apiUrl
+    setSettings(next)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
@@ -129,7 +140,7 @@ export default function SettingsTab({ licenseKey, licenseData }) {
             className="input-field text-xs py-1.5 w-48"
             value={settings.apiUrl}
             onChange={e => set('apiUrl')(e.target.value)}
-            placeholder="http://localhost:8080"
+            placeholder="https://wifi.vault-x.world"
           />
         </Row>
       </Section>

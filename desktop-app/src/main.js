@@ -452,7 +452,7 @@ ipcMain.handle('settings:get', () => store.get('settings') || {
   minimizeToTray:  true,
   autoLogin:       true,
   refreshInterval: 8,
-  apiUrl:          'http://localhost:8080',
+  apiUrl:          'https://wifi.vault-x.world',
 })
 ipcMain.handle('settings:save', (_, settings) => {
   store.set('settings', settings)

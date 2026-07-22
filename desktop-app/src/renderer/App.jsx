@@ -38,7 +38,15 @@ export default function App() {
 
         const settings = await window.electron.settings.get()
         const autoLogin = settings?.autoLogin !== false
-        if (settings?.apiUrl) window.__apiUrl = settings.apiUrl
+        let apiUrl = settings?.apiUrl || 'https://wifi.vault-x.world'
+        // Migrate old local defaults to production
+        if (!apiUrl || apiUrl.includes('localhost') || apiUrl.includes('127.0.0.1')) {
+          apiUrl = 'https://wifi.vault-x.world'
+          try {
+            await window.electron.settings.save({ ...settings, apiUrl })
+          } catch (_) {}
+        }
+        window.__apiUrl = apiUrl.replace(/\/+$/, '')
 
         if (autoLogin && savedToken && savedUser) {
           window.__token = savedToken

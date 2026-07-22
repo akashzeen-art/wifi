@@ -180,7 +180,7 @@ export default function DevicesTab({ devices, setDevices, toggleBlock, hotspotAc
               The 4th device cannot connect. Upgrade your plan to allow more devices.
             </p>
           </div>
-          <a href="http://localhost:5173/dashboard/plans" target="_blank"
+          <a href="https://wifi.vault-x.world/dashboard/plans" target="_blank"
             className="flex-shrink-0 bg-orange-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg hover:bg-orange-600 transition-colors">
             Upgrade Plan
           </a>

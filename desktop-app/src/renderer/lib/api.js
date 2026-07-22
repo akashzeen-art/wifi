@@ -1,15 +1,24 @@
 import axios from 'axios'
 
+export const DEFAULT_API_URL = 'https://wifi.vault-x.world'
+
+const normalizeBase = (url) => {
+  const raw = (url || DEFAULT_API_URL).trim().replace(/\/+$/, '')
+  return raw.endsWith('/api') ? raw : `${raw}/api`
+}
+
 const getBase = () => {
   try {
-    const stored = window.__apiUrl
-    return (stored || 'http://localhost:8080') + '/api'
+    return normalizeBase(window.__apiUrl || DEFAULT_API_URL)
   } catch {
-    return 'http://localhost:8080/api'
+    return normalizeBase(DEFAULT_API_URL)
   }
 }
 
-const api = axios.create({ baseURL: 'http://localhost:8080/api' })
+const api = axios.create({
+  baseURL: normalizeBase(DEFAULT_API_URL),
+  timeout: 20000,
+})
 
 api.interceptors.request.use(config => {
   config.baseURL = getBase()
